@@ -2,12 +2,19 @@
 import sqlite3
 from pathlib import Path
 
-# Database configuration
+
+# =====================================
+# DATABASE CONFIGURATION
+# =====================================
+
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE = BASE_DIR / "finance.db"
 
 
-# Database connection
+# =====================================
+# DATABASE CONNECTION
+# =====================================
+
 def get_db_connection():
     connection = sqlite3.connect(DATABASE)
     connection.row_factory = sqlite3.Row
@@ -15,10 +22,14 @@ def get_db_connection():
     return connection
 
 
-# Create database tables
+# =====================================
+# CREATE TABLES AND MIGRATE DATABASE
+# =====================================
+
 def create_tables():
     connection = get_db_connection()
 
+    # Users table
     connection.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +40,7 @@ def create_tables():
         )
     """)
 
+    # Transactions table
     connection.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,18 +55,21 @@ def create_tables():
         )
     """)
 
+    # Budgets table
     connection.execute("""
         CREATE TABLE IF NOT EXISTS budgets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             category TEXT NOT NULL,
             monthly_limit REAL NOT NULL CHECK(monthly_limit > 0),
             month TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(category, month)
+            UNIQUE(category, month, user_id),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
 
-    # Financial Goals Table
+    # Financial goals table
     connection.execute("""
         CREATE TABLE IF NOT EXISTS financial_goals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,45 +77,226 @@ def create_tables():
             target_amount REAL NOT NULL CHECK(target_amount > 0),
             saved_amount REAL DEFAULT 0 CHECK(saved_amount >= 0),
             target_date TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id INTEGER,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
+    """)
+
+    # ---------------------------------
+    # MIGRATE EXISTING TRANSACTIONS
+    # ---------------------------------
+
+    transaction_columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(transactions)"
+        ).fetchall()
+    }
+
+    if "user_id" not in transaction_columns:
+        connection.execute("""
+            ALTER TABLE transactions
+            ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+        """)
+
+    # ---------------------------------
+    # MIGRATE EXISTING BUDGETS
+    # ---------------------------------
+
+    budget_columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(budgets)"
+        ).fetchall()
+    }
+
+    if "user_id" not in budget_columns:
+
+        connection.execute("""
+            CREATE TABLE budgets_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                category TEXT NOT NULL,
+                monthly_limit REAL NOT NULL CHECK(monthly_limit > 0),
+                month TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(category, month, user_id),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+
+        connection.execute("""
+            INSERT INTO budgets_new
+                (id, category, monthly_limit, month, created_at)
+            SELECT id, category, monthly_limit, month, created_at
+            FROM budgets
+        """)
+
+        connection.execute("DROP TABLE budgets")
+
+        connection.execute("""
+            ALTER TABLE budgets_new RENAME TO budgets
+        """)
+
+    # ---------------------------------
+    # MIGRATE EXISTING FINANCIAL GOALS
+    # ---------------------------------
+
+    goal_columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(financial_goals)"
+        ).fetchall()
+    }
+
+    if "user_id" not in goal_columns:
+        connection.execute("""
+            ALTER TABLE financial_goals
+            ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+        """)
+
+    # ---------------------------------
+    # DATABASE INDEXES
+    # ---------------------------------
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_transactions_user
+        ON transactions(user_id)
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_budgets_user
+        ON budgets(user_id)
+    """)
+
+    connection.execute("""
+        CREATE INDEX IF NOT EXISTS idx_goals_user
+        ON financial_goals(user_id)
     """)
 
     connection.commit()
     connection.close()
 
 
-# Add transaction
-def add_transaction(transaction_type, category, amount, description, date):
+# =====================================
+# USER ACCOUNT FUNCTIONS
+# =====================================
+
+def create_user(username, email, password_hash):
+    connection = get_db_connection()
+
+    try:
+        cursor = connection.execute("""
+            INSERT INTO users (username, email, password_hash)
+            VALUES (?, ?, ?)
+        """, (username, email, password_hash))
+
+        user_id = cursor.lastrowid
+
+        # Transfer old demo data to the first registered user
+        user_count = connection.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        if user_count == 1:
+
+            connection.execute("""
+                UPDATE transactions
+                SET user_id = ?
+                WHERE user_id IS NULL
+            """, (user_id,))
+
+            connection.execute("""
+                UPDATE budgets
+                SET user_id = ?
+                WHERE user_id IS NULL
+            """, (user_id,))
+
+            connection.execute("""
+                UPDATE financial_goals
+                SET user_id = ?
+                WHERE user_id IS NULL
+            """, (user_id,))
+
+        connection.commit()
+        return user_id
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        connection.close()
+
+
+def get_user_by_email(email):
+    connection = get_db_connection()
+
+    user = connection.execute("""
+        SELECT *
+        FROM users
+        WHERE email = ?
+    """, (email,)).fetchone()
+
+    connection.close()
+    return user
+
+
+def get_user_by_id(user_id):
+    connection = get_db_connection()
+
+    user = connection.execute("""
+        SELECT id, username, email
+        FROM users
+        WHERE id = ?
+    """, (user_id,)).fetchone()
+
+    connection.close()
+    return user
+
+
+# =====================================
+# TRANSACTION FUNCTIONS
+# =====================================
+
+def add_transaction(user_id, transaction_type, category,
+                    amount, description, date):
+
     connection = get_db_connection()
 
     connection.execute("""
         INSERT INTO transactions
-        (user_id, type, category, amount, description, date)
-        VALUES (NULL, ?, ?, ?, ?, ?)
-    """, (transaction_type, category, amount, description, date))
+            (user_id, type, category, amount, description, date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        transaction_type,
+        category,
+        amount,
+        description,
+        date
+    ))
 
     connection.commit()
     connection.close()
 
 
-# Get all transactions
-def get_transactions():
+def get_transactions(user_id):
     connection = get_db_connection()
 
     transactions = connection.execute("""
         SELECT *
         FROM transactions
-        WHERE user_id IS NULL
+        WHERE user_id = ?
         ORDER BY date DESC, id DESC
-    """).fetchall()
+    """, (user_id,)).fetchall()
 
     connection.close()
     return transactions
 
 
-# Get financial summary
-def get_summary():
+def get_summary(user_id):
     connection = get_db_connection()
 
     summary = connection.execute("""
@@ -114,8 +310,8 @@ def get_summary():
             ), 0) AS total_expenses
 
         FROM transactions
-        WHERE user_id IS NULL
-    """).fetchone()
+        WHERE user_id = ?
+    """, (user_id,)).fetchone()
 
     connection.close()
 
@@ -129,21 +325,19 @@ def get_summary():
     }
 
 
-# Delete transaction
-def delete_transaction(transaction_id):
+def delete_transaction(user_id, transaction_id):
     connection = get_db_connection()
 
     connection.execute("""
         DELETE FROM transactions
-        WHERE id = ? AND user_id IS NULL
-    """, (transaction_id,))
+        WHERE id = ? AND user_id = ?
+    """, (transaction_id, user_id))
 
     connection.commit()
     connection.close()
 
 
-# Get expenses by category
-def get_expense_by_category():
+def get_expense_by_category(user_id):
     connection = get_db_connection()
 
     expenses = connection.execute("""
@@ -152,32 +346,36 @@ def get_expense_by_category():
             SUM(amount) AS total
         FROM transactions
         WHERE type = 'expense'
-        AND user_id IS NULL
+        AND user_id = ?
         GROUP BY category
         ORDER BY total DESC
-    """).fetchall()
+    """, (user_id,)).fetchall()
 
     connection.close()
     return expenses
 
 
-# Add or update monthly budget
-def set_budget(category, monthly_limit, month):
+# =====================================
+# MONTHLY BUDGET FUNCTIONS
+# =====================================
+
+def set_budget(user_id, category, monthly_limit, month):
     connection = get_db_connection()
 
     connection.execute("""
-        INSERT INTO budgets (category, monthly_limit, month)
-        VALUES (?, ?, ?)
-        ON CONFLICT(category, month)
+        INSERT INTO budgets
+            (user_id, category, monthly_limit, month)
+        VALUES (?, ?, ?, ?)
+
+        ON CONFLICT(category, month, user_id)
         DO UPDATE SET monthly_limit = excluded.monthly_limit
-    """, (category, monthly_limit, month))
+    """, (user_id, category, monthly_limit, month))
 
     connection.commit()
     connection.close()
 
 
-# Get monthly budgets with spending information
-def get_budgets(month):
+def get_budgets(user_id, month):
     connection = get_db_connection()
 
     budgets = connection.execute("""
@@ -193,14 +391,15 @@ def get_budgets(month):
         LEFT JOIN transactions t
             ON b.category = t.category
             AND t.type = 'expense'
-            AND t.user_id IS NULL
+            AND t.user_id = b.user_id
             AND substr(t.date, 1, 7) = b.month
 
-        WHERE b.month = ?
+        WHERE b.user_id = ?
+        AND b.month = ?
 
         GROUP BY b.id
         ORDER BY b.category
-    """, (month,)).fetchall()
+    """, (user_id, month)).fetchall()
 
     connection.close()
 
@@ -227,29 +426,40 @@ def get_budgets(month):
     return budget_list
 
 
-# Add a new financial goal
-def add_financial_goal(goal_name, target_amount, target_date):
+# =====================================
+# FINANCIAL GOALS FUNCTIONS
+# =====================================
+
+def add_financial_goal(user_id, goal_name,
+                       target_amount, target_date):
+
     connection = get_db_connection()
 
     connection.execute("""
         INSERT INTO financial_goals
-        (goal_name, target_amount, saved_amount, target_date)
-        VALUES (?, ?, 0, ?)
-    """, (goal_name, target_amount, target_date))
+            (user_id, goal_name, target_amount,
+             saved_amount, target_date)
+        VALUES (?, ?, ?, 0, ?)
+    """, (
+        user_id,
+        goal_name,
+        target_amount,
+        target_date
+    ))
 
     connection.commit()
     connection.close()
 
 
-# Get all financial goals with progress
-def get_financial_goals():
+def get_financial_goals(user_id):
     connection = get_db_connection()
 
     goals = connection.execute("""
         SELECT *
         FROM financial_goals
+        WHERE user_id = ?
         ORDER BY target_date ASC, id DESC
-    """).fetchall()
+    """, (user_id,)).fetchall()
 
     connection.close()
 
@@ -277,28 +487,26 @@ def get_financial_goals():
     return goal_list
 
 
-# Update saved amount for a financial goal
-def update_goal_savings(goal_id, new_saved_amount):
+def update_goal_savings(user_id, goal_id, new_saved_amount):
     connection = get_db_connection()
 
     connection.execute("""
         UPDATE financial_goals
         SET saved_amount = ?
-        WHERE id = ?
-    """, (new_saved_amount, goal_id))
+        WHERE id = ? AND user_id = ?
+    """, (new_saved_amount, goal_id, user_id))
 
     connection.commit()
     connection.close()
 
 
-# Delete a financial goal
-def delete_financial_goal(goal_id):
+def delete_financial_goal(user_id, goal_id):
     connection = get_db_connection()
 
     connection.execute("""
         DELETE FROM financial_goals
-        WHERE id = ?
-    """, (goal_id,))
+        WHERE id = ? AND user_id = ?
+    """, (goal_id, user_id))
 
     connection.commit()
     connection.close()
