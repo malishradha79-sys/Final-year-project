@@ -1,0 +1,519 @@
+
+import sqlite3
+from pathlib import Path
+
+# Database location
+BASE_DIR = Path(__file__).resolve().parent
+DATABASE = BASE_DIR / "finance.db"
+
+
+# Connect to database
+def get_db_connection():
+
+    connection = sqlite3.connect(DATABASE)
+
+    connection.row_factory = sqlite3.Row
+
+    connection.execute("PRAGMA foreign_keys = ON")
+
+    return connection
+
+
+# Create database tables
+def create_tables():
+
+    connection = get_db_connection()
+
+    cursor = connection.cursor()
+
+    # Users table
+    
+    # Budgets Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            monthly_limit REAL NOT NULL CHECK(monthly_limit > 0),
+            month TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(category, month)
+        )
+    """)
+
+
+    # Transactions table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            type TEXT NOT NULL CHECK(type IN ('income', 'expense')),
+            category TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount > 0),
+            description TEXT,
+            date TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (user_id)
+            REFERENCES users(id)
+            ON DELETE CASCADE
+        )
+    """)
+
+    connection.commit()
+
+    connection.close()
+
+    print("Database tables created successfully!")
+
+
+# Run database initialization
+if __name__ == "__main__":
+
+    create_tables()
+
+
+# =================================
+# Transaction Management Functions
+# =================================
+
+
+# 1. Add Transaction
+def add_transaction(transaction_type, category, amount, description, date):
+
+    connection = get_db_connection()
+
+    connection.execute("""
+        INSERT INTO transactions
+        (user_id, type, category, amount, description, date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        None,
+        transaction_type,
+        category,
+        amount,
+        description,
+        date
+    ))
+
+    connection.commit()
+    connection.close()
+
+    return True
+
+
+# 2. Get All Transactions
+def get_transactions():
+
+    connection = get_db_connection()
+
+    transactions = connection.execute("""
+        SELECT * FROM transactions
+        WHERE user_id IS NULL
+        ORDER BY date DESC, id DESC
+    """).fetchall()
+
+    connection.close()
+
+    return transactions
+
+
+# 3. Calculate Financial Summary
+def get_summary():
+
+    connection = get_db_connection()
+
+    summary = connection.execute("""
+        SELECT
+            COALESCE(SUM(CASE
+                WHEN type = 'income' THEN amount
+                ELSE 0
+            END), 0) AS total_income,
+
+            COALESCE(SUM(CASE
+                WHEN type = 'expense' THEN amount
+                ELSE 0
+            END), 0) AS total_expenses
+
+        FROM transactions
+        WHERE user_id IS NULL
+    """).fetchone()
+
+    connection.close()
+
+    total_income = summary["total_income"]
+    total_expenses = summary["total_expenses"]
+
+    return {
+        "total_income": total_income,
+        "total_expenses": total_expenses,
+        "balance": total_income - total_expenses
+    }
+
+
+# 4. Delete Transaction
+def delete_transaction(transaction_id):
+
+    connection = get_db_connection()
+
+    cursor = connection.execute("""
+        DELETE FROM transactions
+        WHERE id = ? AND user_id IS NULL
+    """, (transaction_id,))
+
+    connection.commit()
+
+    deleted = cursor.rowcount > 0
+
+    connection.close()
+
+    return deleted
+
+
+def get_expense_by_category():
+    connection = get_db_connection()
+
+    expenses = connection.execute("""
+        SELECT
+            category,
+            SUM(amount) AS total
+        FROM transactions
+        WHERE type = 'expense'
+        AND user_id IS NULL
+        GROUP BY category
+        ORDER BY total DESC
+    """).fetchall()
+
+    connection.close()
+    return expenses
+
+
+# =================================
+# Budget Management Functions
+# =================================
+
+# 1. Add or Update Budget
+def set_budget(category, monthly_limit, month):
+
+    connection = get_db_connection()
+
+    connection.execute("""
+        INSERT INTO budgets (category, monthly_limit, month)
+        VALUES (?, ?, ?)
+
+        ON CONFLICT(category, month)
+        DO UPDATE SET monthly_limit = excluded.monthly_limit
+    """, (category, monthly_limit, month))
+
+    connection.commit()
+    connection.close()
+
+    return True
+
+
+# 2. Get Budgets with Actual Expenses
+def get_budgets(month):
+
+    connection = get_db_connection()
+
+    budgets = connection.execute("""
+        SELECT
+            b.id,
+            b.category,
+            b.monthly_limit,
+            b.month,
+            COALESCE(SUM(t.amount), 0) AS spent
+
+        FROM budgets b
+
+        LEFT JOIN transactions t
+            ON t.category = b.category
+            AND t.type = 'expense'
+            AND t.user_id IS NULL
+            AND substr(t.date, 1, 7) = b.month
+
+        WHERE b.month = ?
+
+        GROUP BY
+            b.id,
+            b.category,
+            b.monthly_limit,
+            b.month
+
+        ORDER BY b.category
+    """, (month,)).fetchall()
+
+    connection.close()
+
+    result = []
+
+    for budget in budgets:
+
+        limit = budget["monthly_limit"]
+        spent = budget["spent"]
+        remaining = limit - spent
+
+        percentage = (spent / limit) * 100
+
+        result.append({
+            "id": budget["id"],
+            "category": budget["category"],
+            "monthly_limit": limit,
+            "spent": spent,
+            "remaining": remaining,
+            "percentage": round(percentage, 2),
+            "month": budget["month"],
+            "progress_width": min(percentage, 100),
+        })
+
+    return result
+
+new file 
+
+from ai_assistant import get_ai_response    
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from database import (
+    create_tables,
+    get_transactions,
+    get_summary,
+    add_transaction,
+    get_expense_by_category,
+    set_budget,
+    get_budgets,
+    add_financial_goal,
+    get_financial_goals,
+    update_goal_savings,
+    delete_financial_goal
+)
+from datetime import datetime
+
+app = Flask(__name__)
+app.secret_key = "fintrack-development-key"
+
+create_tables()
+
+@app.route("/")
+def home():
+    transactions = get_transactions()
+    summary = get_summary()
+
+    current_month = datetime.now().strftime("%Y-%m")
+    budgets = get_budgets(current_month)
+
+    return render_template(
+        "index.html",
+        transactions=transactions,
+        summary=summary,
+        budgets=budgets,
+        current_month=current_month
+    )
+
+
+@app.route("/add-transaction", methods=["POST"])
+def add_transaction_route():
+    transaction_type = request.form.get("type", "").strip()
+    category = request.form.get("category", "").strip()
+    amount_text = request.form.get("amount", "").strip()
+    description = request.form.get("description", "").strip()
+    date = request.form.get("date", "").strip()
+
+    # Validate transaction type
+    if transaction_type not in ["income", "expense"]:
+        flash("Please select a valid transaction type.")
+        return redirect(url_for("home"))
+
+    # Validate category
+    if not category:
+        flash("Please enter a category.")
+        return redirect(url_for("home"))
+
+    # Validate amount
+    try:
+        amount = float(amount_text)
+        if amount <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        flash("Please enter a valid amount greater than zero.")
+        return redirect(url_for("home"))
+
+    # Validate date
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        flash("Please enter a valid date.")
+        return redirect(url_for("home"))
+
+    # Save transaction in SQLite
+    add_transaction(
+        transaction_type,
+        category,
+        amount,
+        description,
+        date
+    )
+
+    flash("Transaction added successfully!")
+    return redirect(url_for("home"))
+
+
+@app.route("/api/expense-summary")
+def expense_summary():
+    expenses = get_expense_by_category()
+
+    return jsonify([
+        {
+            "category": expense["category"],
+            "total": expense["total"]
+        }
+        for expense in expenses
+    ])
+
+
+@app.route("/add-budget", methods=["POST"])
+def add_budget_route():
+
+    category = request.form.get("category", "").strip()
+    limit_text = request.form.get("monthly_limit", "").strip()
+
+    if not category or len(category) > 50:
+        flash("Please enter a valid category (maximum 50 characters).")
+        return redirect(url_for("home"))
+
+    try:
+        monthly_limit = float(limit_text)
+
+        if not monthly_limit > 0 or not monthly_limit < float("inf"):
+            raise ValueError
+
+    except (ValueError, TypeError):
+        flash("Please enter a valid monthly budget.")
+        return redirect(url_for("home"))
+
+    current_month = datetime.now().strftime("%Y-%m")
+
+    set_budget(category, monthly_limit, current_month)
+
+    flash("Monthly budget saved successfully!")
+
+    return redirect(url_for("home"))
+
+
+@app.route("/ai-chat", methods=["POST"])
+def ai_chat():
+    data = request.get_json(silent=True) or {}
+
+    user_message = data.get("message", "").strip()
+
+    if not user_message:
+        return jsonify({
+            "reply": "Please enter a question."
+        }), 400
+
+    if len(user_message) > 1000:
+        return jsonify({
+            "reply": "Please keep your question within 1000 characters."
+        }), 400
+
+    # Get financial information from database
+    summary = get_summary()
+
+    current_month = datetime.now().strftime("%Y-%m")
+    budgets = get_budgets(current_month)
+    expenses = get_expense_by_category()
+
+    # Prepare financial context for Gemini
+    financial_context = f"""
+    Current Month: {current_month}
+
+    Total Income: Rs. {summary['total_income']}
+    Total Expenses: Rs. {summary['total_expenses']}
+    Available Balance: Rs. {summary['balance']}
+
+    Expense Categories:
+    """
+
+    for expense in expenses:
+        financial_context += (
+            f"\n{expense['category']}: Rs. {expense['total']}"
+        )
+
+    financial_context += "\n\nMonthly Budgets:\n"
+
+    for budget in budgets:
+        financial_context += (
+            f"\nCategory: {budget['category']}"
+            f"\nBudget Limit: Rs. {budget['monthly_limit']}"
+            f"\nSpent: Rs. {budget['spent']}"
+            f"\nRemaining: Rs. {budget['remaining']}\n"
+        )
+
+    # Generate AI response
+    answer = get_ai_response(
+        user_message,
+        financial_context
+    )
+
+    return jsonify({
+        "reply": answer
+    })
+
+@app.route("/api/smart-insights", methods=["GET"])
+def smart_insights():
+    summary = get_summary()
+
+    current_month = datetime.now().strftime("%Y-%m")
+    budgets = get_budgets(current_month)
+    expenses = get_expense_by_category()
+
+    financial_context = f"""
+    Current Month: {current_month}
+
+    Total Income: Rs. {summary['total_income']}
+    Total Expenses: Rs. {summary['total_expenses']}
+    Available Balance: Rs. {summary['balance']}
+
+    Expense Categories:
+    """
+
+    if expenses:
+        for expense in expenses:
+            financial_context += (
+                f"\n{expense['category']}: Rs. {expense['total']}"
+            )
+    else:
+        financial_context += "\nNo expense records available."
+
+    financial_context += "\n\nMonthly Budgets:\n"
+
+    if budgets:
+        for budget in budgets:
+            financial_context += (
+                f"\nCategory: {budget['category']}"
+                f"\nBudget Limit: Rs. {budget['monthly_limit']}"
+                f"\nSpent: Rs. {budget['spent']}"
+                f"\nRemaining: Rs. {budget['remaining']}"
+                f"\nUsed: {budget['percentage']}%\n"
+            )
+    else:
+        financial_context += "\nNo monthly budgets have been set."
+
+    prompt = """
+    Analyse the user's financial information.
+
+    Give 4 short and useful spending insights.
+    Focus on high spending categories, budget warnings,
+    available balance, and practical saving suggestions.
+
+    Use only the supplied financial information.
+    Do not invent numbers or assume missing information.
+    Use simple English and bullet points.
+    """
+
+    answer = get_ai_response(prompt, financial_context)
+
+    return jsonify({"insights": answer})
+
+
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

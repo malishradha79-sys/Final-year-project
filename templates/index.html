@@ -1,0 +1,488 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Finance Tracker</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+
+<div class="dashboard">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <h2 class="logo">FinTrack<span> AI</span></h2>
+
+        <p class="menu-title">MENU</p>
+
+        <nav>
+            <a href="/" class="active">Dashboard</a>
+            <a href="#transactions">Transactions</a>
+            <a href="#budgets">Budgets</a>
+            <a href="#analytics">Analytics</a>
+            <a href="#ai-assistant">AI Assistant</a>
+        </nav>
+
+        <div class="sidebar-bottom">
+            <a href="#">Settings</a>
+            <a href="#">Logout</a>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+        <!-- Header -->
+        <header class="top-header">
+            <div>
+                <h1>Dashboard</h1>
+                <p>Welcome back! Here's your financial overview.</p>
+                <p id="current-date"></p>
+            </div>
+
+            <div class="profile">
+                <span>My Account</span>
+                <div class="profile-icon">U</div>
+            </div>
+        </header>
+
+        <!-- Summary Cards -->
+        <section class="summary-cards">
+
+            <div class="card">
+                <p>Total Balance</p>
+                <h2>₹{{ summary.balance | round(2) }}</h2>
+                <span>Available balance</span>
+            </div>
+
+            <div class="card">
+                <p>Total Income</p>
+                <h2>₹{{ summary.total_income | round(2) }}</h2>
+                <span>Total income recorded</span>
+            </div>
+
+            <div class="card">
+                <p>Total Expenses</p>
+                <h2>₹{{ summary.total_expenses | round(2) }}</h2>
+                <span>Total expenses recorded</span>
+            </div>
+
+            <div class="card">
+                <p>Total Savings</p>
+                <h2>₹{{ summary.balance | round(2) }}</h2>
+                <span>Income minus expenses</span>
+            </div>
+
+        </section>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages() %}
+            {% for message in messages %}
+                <p class="flash-message">{{ message }}</p>
+            {% endfor %}
+        {% endwith %}
+
+        <!-- Add Transaction -->
+        <section class="add-transaction">
+            <h2>Add New Transaction</h2>
+
+            <form action="{{ url_for('add_transaction_route') }}"
+                  method="POST">
+
+                <label>Transaction Type</label>
+                <select name="type" required>
+                    <option value="">Select Type</option>
+                    <option value="income">Income</option>
+                    <option value="expense">Expense</option>
+                </select>
+
+                <label>Category</label>
+                <input type="text" name="category"
+                       placeholder="Example: Food, Salary, Shopping"
+                       required>
+
+                <label>Amount (₹)</label>
+                <input type="number" name="amount"
+                       placeholder="Enter amount"
+                       min="0.01" step="0.01" required>
+
+                <label>Description</label>
+                <input type="text" name="description"
+                       placeholder="Enter description">
+
+                <label>Date</label>
+                <input type="date" name="date" required>
+
+                <button type="submit">Add Transaction</button>
+            </form>
+        </section>
+
+        <!-- Budget Management -->
+        <section class="budget-section" id="budgets">
+
+            <h2>Budget Management</h2>
+            <p>Set your monthly spending limits and manage your expenses.</p>
+
+            <!-- Budget Form -->
+            <div class="budget-form">
+                <h3>Set Monthly Budget</h3>
+
+                <form action="{{ url_for('add_budget_route') }}"
+                      method="POST">
+
+                    <label>Category</label>
+                    <input
+                        type="text"
+                        name="category"
+                        placeholder="Example: Food, Shopping, Transport"
+                        maxlength="50"
+                        required
+                    >
+
+                    <label>Monthly Budget (₹)</label>
+                    <input
+                        type="number"
+                        name="monthly_limit"
+                        placeholder="Enter budget amount"
+                        min="0.01"
+                        step="0.01"
+                        required
+                    >
+
+                    <button type="submit">Save Budget</button>
+                </form>
+            </div>
+
+            <!-- Budget List -->
+            <div class="budget-list">
+                <h3>Your Monthly Budgets</h3>
+
+                {% for budget in budgets %}
+
+                    <div class="budget-details">
+    <span>
+        Spent: ₹{{ "%.2f"|format(budget.spent) }}
+    </span>
+
+    <span>
+        Limit: ₹{{ "%.2f"|format(budget.monthly_limit) }}
+    </span>
+</div>
+
+{% if budget.percentage >= 100 %}
+
+    <p class="budget-alert danger-alert">
+        ⚠️ Budget exceeded! You have crossed your monthly limit.
+    </p>
+
+{% elif budget.percentage >= 80 %}
+
+    <p class="budget-alert warning-alert">
+        ⚠️ Warning! You have used 80% or more of your budget.
+    </p>
+
+{% endif %}
+
+                {% else %}
+
+                    <p>No budgets added for this month yet.</p>
+
+                {% endfor %}
+            </div>
+
+        </section>
+
+        <!-- Expense Analytics -->
+        <section class="analytics-section" id="analytics">
+            <h2>Expense Overview</h2>
+            <p>Understand where your money is being spent.</p>
+
+            <div class="chart-container">
+                <canvas id="expenseChart"></canvas>
+            </div>
+        </section>
+        <!-- Smart Spending Insights -->
+<section class="insights-section" id="smart-insights">
+    <div class="insights-header">
+        <div>
+            <h2>Smart Spending Insights</h2>
+            <p>AI-powered analysis of your financial activities.</p>
+        </div>
+
+        <button id="generate-insights-btn">
+            Generate Insights
+        </button>
+    </div>
+
+    <div id="insights-container">
+        <p class="insights-placeholder">
+            Click "Generate Insights" to analyse your spending.
+        </p>
+    </div>
+</section>
+
+
+<!-- Financial Goals & Savings Tracker -->
+<section class="goals-section" id="financial-goals">
+
+    <div class="goals-header">
+        <div>
+            <h2>Financial Goals & Savings</h2>
+            <p>Set your financial goals and track your savings progress.</p>
+        </div>
+    </div>
+
+    <!-- Add New Goal Form -->
+    <div class="goal-form-container">
+        <h3>Create New Financial Goal</h3>
+
+        <form action="{{ url_for('add_goal') }}" method="POST"
+              class="goal-form">
+
+            <div class="form-group">
+                <label for="goal_name">Goal Name</label>
+                <input
+                    type="text"
+                    id="goal_name"
+                    name="goal_name"
+                    placeholder="Example: Buy a Laptop"
+                    maxlength="80"
+                    required
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="target_amount">Target Amount (₹)</label>
+                <input
+                    type="number"
+                    id="target_amount"
+                    name="target_amount"
+                    placeholder="50000"
+                    min="0.01"
+                    step="0.01"
+                    required
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="target_date">Target Date</label>
+                <input
+                    type="date"
+                    id="target_date"
+                    name="target_date"
+                    required
+                >
+            </div>
+
+            <button type="submit" class="add-goal-btn">
+                + Create Goal
+            </button>
+
+        </form>
+    </div>
+
+    <!-- Display Financial Goals -->
+    <div class="goals-list">
+        <h3>My Savings Goals</h3>
+
+        {% if goals %}
+
+            {% for goal in goals %}
+
+                <div class="goal-card">
+
+                    <div class="goal-card-header">
+                        <div>
+                            <h4>{{ goal.goal_name }}</h4>
+                            <p>Target Date: {{ goal.target_date }}</p>
+                        </div>
+
+                        <span class="goal-percentage">
+                            {{ "%.1f"|format(goal.percentage) }}%
+                        </span>
+                    </div>
+
+                    <div class="goal-amount-details">
+                        <div>
+                            <span>Saved Amount</span>
+                            <strong>₹{{ "%.2f"|format(goal.saved_amount) }}</strong>
+                        </div>
+
+                        <div>
+                            <span>Target Amount</span>
+                            <strong>₹{{ "%.2f"|format(goal.target_amount) }}</strong>
+                        </div>
+
+                        <div>
+                            <span>Remaining</span>
+                            <strong>₹{{ "%.2f"|format(goal.remaining) }}</strong>
+                        </div>
+                    </div>
+
+                    <div class="goal-progress">
+                        <div
+                            class="goal-progress-fill"
+                            data-progress="{{ goal.progress_width }}"
+                        ></div>
+                    </div>
+
+                    {% if goal.is_completed %}
+                        <p class="goal-completed">
+                            🎉 Congratulations! Goal completed.
+                        </p>
+                    {% endif %}
+
+                    <!-- Update Savings Form -->
+                    <form action="{{ url_for('update_goal_savings_route') }}"
+                          method="POST"
+                          class="update-goal-form">
+
+                        <input
+                            type="hidden"
+                            name="goal_id"
+                            value="{{ goal.id }}"
+                        >
+
+                        <input
+                            type="number"
+                            name="saved_amount"
+                            placeholder="Enter total saved amount"
+                            min="0"
+                            step="0.01"
+                            required
+                        >
+
+                        <button type="submit">
+                            Update Savings
+                        </button>
+
+                    </form>
+
+                    <!-- Delete Goal Form -->
+                    <form action="{{ url_for('delete_goal') }}"
+                          method="POST"
+                          class="delete-goal-form"
+                          onsubmit="return confirm('Are you sure you want to delete this goal?');">
+
+                        <input
+                            type="hidden"
+                            name="goal_id"
+                            value="{{ goal.id }}"
+                        >
+
+                        <button type="submit">
+                            Delete Goal
+                        </button>
+
+                    </form>
+
+                </div>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p class="no-goals-message">
+                No financial goals yet. Create your first savings goal!
+            </p>
+
+        {% endif %}
+
+    </div>
+
+</section>
+
+        
+<!-- AI Financial Assistant -->
+<section class="ai-assistant-section" id="ai-assistant">
+
+    <h2>FinTrack AI Assistant</h2>
+    <p>Ask questions about your expenses, budgets and savings.</p>
+
+    <div class="ai-chat-container">
+
+        <!-- Chat Messages -->
+        <div class="chat-messages" id="chat-messages">
+
+            <div class="ai-message">
+                <strong>FinTrack AI</strong>
+                <p>Hello! I'm your personal finance assistant. How can I help you today?</p>
+            </div>
+
+        </div>
+
+        <!-- Chat Input -->
+        <form id="ai-chat-form">
+
+            <input
+                type="text"
+                id="ai-user-input"
+                placeholder="Ask something about your finances..."
+                maxlength="1000"
+                required
+            >
+
+            <button type="submit" id="ai-send-button">
+                Send
+            </button>
+
+        </form>
+
+    </div>
+
+</section>
+
+        <!-- Recent Transactions -->
+        <section class="transactions-section" id="transactions">
+
+            <div class="section-heading">
+                <h3>Recent Transactions</h3>
+                <button type="button">View All</button>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th>Category</th>
+                        <th>Type</th>
+                        <th>Amount</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+                    {% for transaction in transactions %}
+                        <tr>
+                            <td>{{ transaction["date"] }}</td>
+                            <td>{{ transaction["description"] or "-" }}</td>
+                            <td>{{ transaction["category"] }}</td>
+                            <td>{{ transaction["type"] }}</td>
+                            <td>
+                                ₹{{ "%.2f"|format(transaction["amount"]) }}
+                            </td>
+                        </tr>
+                    {% else %}
+                        <tr>
+                            <td colspan="5">No transactions available.</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+        </section>
+
+    </main>
+</div>
+
+<!-- JavaScript -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="{{ url_for('static', filename='js/script.js') }}"></script>
+
+</body>
+</html>
